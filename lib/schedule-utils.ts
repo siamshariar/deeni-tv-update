@@ -536,6 +536,27 @@ export function formatTime(seconds: number): string {
 }
 
 /**
+ * Calculate an adjusted live seek time for resuming after app backgrounding and network latency.
+ *
+ * - `serverSeekTo` is the position returned by the API in seconds.
+ * - `programDuration` is the total duration in seconds.
+ * - `backgroundMs` is the milliseconds app spent hidden before reload.
+ * - `networkMs` is the milliseconds it took to fetch the API response.
+ */
+export function getAdjustedLiveSeekTime(
+  serverSeekTo: number,
+  programDuration: number,
+  backgroundMs: number = 0,
+  networkMs: number = 0,
+): number {
+  const offsetSeconds = (backgroundMs + networkMs) / 1000
+  const adjusted = serverSeekTo + offsetSeconds
+  if (adjusted < 0) return 0
+  if (adjusted > programDuration) return programDuration
+  return adjusted
+}
+
+/**
  * Format duration in seconds to human readable format
  */
 export function formatDuration(seconds: number): string {
