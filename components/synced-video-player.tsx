@@ -1294,6 +1294,10 @@ export function SyncedVideoPlayer({
         setShowBrandedOverlay(false)
         setShowProgramOverlay(false)
         setIsLoading(false)
+        // Clear in-flight load lock so resume can re-enter loadChannel.
+        isStreamLoadingRef.current = false
+        // If iOS primer was destroyed, clear primed state to avoid dead path.
+        if (isPrimedRef.current) isPrimedRef.current = false
         destroy()
       } else if (appInBackgroundRef.current) {
         appInBackgroundRef.current = false
