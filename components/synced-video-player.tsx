@@ -34,6 +34,7 @@ import {
   ApiChannel,
   getStoredApiChannels,
   saveApiChannels,
+  getAdjustedLiveSeekTime,
 } from '@/lib/schedule-utils'
 import { useYouTubePlayerModel as useYouTubePlayer, YT_STATE } from '@/components/player/youtube-player-model'
 import { IframePlayer } from '@/components/player/iframe-player'
@@ -167,6 +168,7 @@ export function SyncedVideoPlayer({
   const isStreamLoadingRef = useRef(false)
   // Track whether the app is currently in the background (visibility API)
   const appInBackgroundRef = useRef(false)
+  const backgroundStartTimeRef = useRef<number | null>(null)
   
   // "Latest value" refs — used inside syncWithServer so we don't need those values
   // in the useCallback dependency array (which would reset the 5-min interval on each video change)
@@ -440,7 +442,8 @@ export function SyncedVideoPlayer({
       const channel = storedChannels.find(c => String(c.id) === channelId)
       const lid = channel?.localizationId || '5'
 
-      let apiUrl = `${EXTERNAL_API_BASE}/live?lid=${lid}`
+      const cacheBuster = Date.now()
+      let apiUrl = `${EXTERNAL_API_BASE}/live?lid=${lid}&_=${cacheBuster}`
       if (channel?.isQuran === true) {
         apiUrl += '&iq=true'
       }
@@ -574,7 +577,7 @@ export function SyncedVideoPlayer({
   // Keep the ref in sync with the latest closure
   useEffect(() => { syncImmediateAfterTransitionRef.current = syncImmediateAfterTransition }, [syncImmediateAfterTransition])
 
-  const loadChannel = useCallback(async (channelId: string) => {
+  const loadChannel = useCallback(async (channelId: string, backgroundMs: number = 0) => {
     // Prevent concurrent loads (e.g. multiple visibilitychange events / rapid reload taps)
     if (isLoading || isStreamLoadingRef.current) return
     isStreamLoadingRef.current = true
@@ -594,9 +597,11 @@ export function SyncedVideoPlayer({
       console.log('🎬 Loading channel:', channelId)
       
       const clientTime = Date.now()
+      const fetchStartTime = Date.now()
 
       // 1️⃣ Try external API directly from browser (bypasses Cloudflare)
       let result = await fetchFromBrowserAPI(channelId)
+      const fetchLatencyMs = Date.now() - fetchStartTime
 
       // 2️⃣ Fallback to our own Next.js API route (local schedule data)
       if (!result) {
@@ -637,7 +642,8 @@ export function SyncedVideoPlayer({
       }
       
       const startTime = result.currentProgram.seekTo
-      const timeRemaining = result.currentProgram.duration - result.currentProgram.seekTo
+      const adjustedStartTime = getAdjustedLiveSeekTime(startTime, program.duration, backgroundMs, fetchLatencyMs)
+      const timeRemaining = Math.max(0, program.duration - adjustedStartTime)
       
       brandedOverlayProgramRef.current = program.title
 
@@ -645,8 +651,8 @@ export function SyncedVideoPlayer({
       setShowStartScreen(false)
       setShowBrandedOverlay(true)
       setCurrentProgram(program)
-      setCurrentTime(startTime)
-      setDisplayTime(formatTime(startTime))
+      setCurrentTime(adjustedStartTime)
+      setDisplayTime(formatTime(adjustedStartTime))
       setTimeRemaining(formatTime(timeRemaining))
       setVideoDuration(program.duration)
 
@@ -892,7 +898,7 @@ export function SyncedVideoPlayer({
 
         // 2. Swap the video on the existing player — keeps audio unlock alive
         lastVideoIdRef.current = program.videoId
-        const loaded = loadVideo(program.videoId, Math.floor(startTime))
+        const loaded = loadVideo(program.videoId, Math.floor(adjustedStartTime))
         if (loaded) {
           console.log('✅ 🍎 Video swapped on primed player')
           setYouTubeVolume(volume)
@@ -915,7 +921,7 @@ export function SyncedVideoPlayer({
             setShowStartScreen(false)
             onStartClick?.()
             
-            seekTo(startTime, true)
+            seekTo(adjustedStartTime, true)
             play()
             
             // Get actual duration from YouTube
@@ -1057,26 +1063,9 @@ export function SyncedVideoPlayer({
 
     // Then, try to refresh channels from API
     try {
-      let res = null
-
-      try {
-        res = await clientFetchWithAuth('https://api.deeniinfotech.com/api/tv-channels')
-      } catch (err) {
-        console.warn('clientFetchWithAuth failed for tv-channels, trying plain fetch fallback', err)
-      }
-
-      if (!res) {
-        const fallbackRes = await fetch('/api/tv-channels')
-        if (fallbackRes.ok) {
-          res = await fallbackRes.json()
-        } else {
-          throw new Error(`Fallback /api/tv-channels failed ${fallbackRes.status}`)
-        }
-      }
-
-      const data = res?.data || res
-      if (data?.length) {
-        const freshChannels = data
+      const res = await clientFetchWithAuth('https://api.deeniinfotech.com/api/tv-channels')
+      if (res?.data?.length) {
+        const freshChannels = res.data
         const storedChannels = getStoredApiChannels()
 
         // Check if there are differences
@@ -1298,6 +1287,7 @@ export function SyncedVideoPlayer({
     const onVisibilityChange = () => {
       if (document.hidden) {
         appInBackgroundRef.current = true
+        backgroundStartTimeRef.current = Date.now()
         console.log('🌙 App hidden — stopping stream and releasing player')
         setPlayerReady(false)
         setIframeVisible(false)
@@ -1307,14 +1297,16 @@ export function SyncedVideoPlayer({
         destroy()
       } else if (appInBackgroundRef.current) {
         appInBackgroundRef.current = false
-        console.log('☀️ App resumed — refreshing live stream')
+        const hiddenMs = backgroundStartTimeRef.current ? Date.now() - backgroundStartTimeRef.current : 0
+        backgroundStartTimeRef.current = null
+        console.log('☀️ App resumed — refreshing live stream', { hiddenMs })
         if (currentChannelId && !showStartScreen) {
           // Show loading state immediately to avoid black/paused frames
           setIsLoading(true)
           setShowBrandedOverlay(true)
           setIframeVisible(false)
           setApiError(null)
-          loadChannel(currentChannelId)
+          loadChannel(currentChannelId, hiddenMs)
         }
       }
     }
