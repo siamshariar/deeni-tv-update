@@ -30,7 +30,7 @@ import {
   addToPreviousVideos,
   getPreviousVideos,
   savePreviousVideos,
-  STORAGE_KEY,
+  STORAGE_KEY,in
   ApiChannel,
   getStoredApiChannels,
   saveApiChannels,
@@ -1305,6 +1305,8 @@ export function SyncedVideoPlayer({
 
   // Handle app background/resume so we always show a fresh live stream on return
   useEffect(() => {
+    const SESSION_KEY = 'deeni-tv-background-start'
+
     const clearAndDestroyPlayer = () => {
       setPlayerReady(false)
       setIframeVisible(false)
@@ -1320,6 +1322,7 @@ export function SyncedVideoPlayer({
       if (appInBackgroundRef.current) return
       appInBackgroundRef.current = true
       backgroundStartTimeRef.current = Date.now()
+      window.sessionStorage.setItem(SESSION_KEY, String(backgroundStartTimeRef.current))
       console.log('🌙 App hidden/page hidden — stopping stream and releasing player')
       clearAndDestroyPlayer()
     }
@@ -1327,8 +1330,21 @@ export function SyncedVideoPlayer({
     const resumeFromBackground = () => {
       if (!appInBackgroundRef.current) return
       appInBackgroundRef.current = false
-      const hiddenMs = backgroundStartTimeRef.current ? Date.now() - backgroundStartTimeRef.current : 0
+
+      const persisted = window.sessionStorage.getItem(SESSION_KEY)
+      let hiddenStart = persisted ? Number(persisted) : null
+      if (!hiddenStart && backgroundStartTimeRef.current) {
+        hiddenStart = backgroundStartTimeRef.current
+      }
+
+      let hiddenMs = 0
+      if (hiddenStart && !Number.isNaN(hiddenStart)) {
+        hiddenMs = Math.max(0, Date.now() - hiddenStart)
+      }
+
+      window.sessionStorage.removeItem(SESSION_KEY)
       backgroundStartTimeRef.current = null
+
       console.log('☀️ App resumed/page shown — refreshing live stream', { hiddenMs })
       if (currentChannelId && !showStartScreen) {
         setIsLoading(true)
@@ -1357,14 +1373,26 @@ export function SyncedVideoPlayer({
       }
     }
 
+    const onWindowBlur = () => {
+      enterBackground()
+    }
+
+    const onWindowFocus = () => {
+      resumeFromBackground()
+    }
+
     document.addEventListener('visibilitychange', onVisibilityChange)
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('pageshow', onPageShow)
+    window.addEventListener('blur', onWindowBlur)
+    window.addEventListener('focus', onWindowFocus)
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('pagehide', onPageHide)
       window.removeEventListener('pageshow', onPageShow)
+      window.removeEventListener('blur', onWindowBlur)
+      window.removeEventListener('focus', onWindowFocus)
     }
   }, [currentChannelId, loadChannel, destroy, showStartScreen])
 
