@@ -20,9 +20,9 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { CurrentVideoData, VideoProgram, Channel } from '@/types/schedule'
 import { clientFetchWithAuth } from '@/lib/client-fetch'
 import { 
-  formatTime, 
-  CHANNELS, 
-  MASTER_EPOCH_START, 
+  formatTime,
+  CHANNELS,
+  MASTER_EPOCH_START,
   getTotalScheduleDuration,
   getChannelPrograms,
   getSavedChannel,
@@ -642,6 +642,54 @@ export function SyncedVideoPlayer({
       }
       
       const startTime = result.currentProgram.seekTo
+      // Use non-clamped adjusted start so we can overflow to next/queued programs.
+      const rawAdjustedStartTime = getAdjustedLiveSeekTime(startTime, program.duration, backgroundMs, fetchLatencyMs, false)
+
+      // Convert upcoming API list to our internal shape so we can slide across boundaries
+      const apiUpcomingPrograms: VideoProgram[] = (result.upcomingPrograms || []).map((prog: { ytVideoId: string; title: string; duration: number }) => ({
+        id: prog.ytVideoId,
+        videoId: prog.ytVideoId,
+        title: prog.title,
+        description: prog.title,
+        duration: prog.duration,
+        category: 'Lecture',
+        language: 'Bengali',
+        channelId: channelId,
+        thumbnail: `https://img.youtube.com/vi/${prog.ytVideoId}/maxresdefault.jpg`
+      }))
+
+      const allPrograms: VideoProgram[] = [program, ...apiUpcomingPrograms]
+      let selectedProgram = program
+      let selectedStartTime = rawAdjustedStartTime
+      let selectedIndex = 0
+
+      while (selectedIndex < allPrograms.length && selectedStartTime >= allPrograms[selectedIndex].duration) {
+        selectedStartTime -= allPrograms[selectedIndex].duration
+        selectedIndex += 1
+      }
+
+      if (selectedIndex >= allPrograms.length) {
+        // Went past all known API programs; pick last one at its end to avoid stale seek.
+        selectedIndex = allPrograms.length - 1
+        selectedProgram = allPrograms[selectedIndex]
+        selectedStartTime = selectedProgram.duration
+      } else {
+        selectedProgram = allPrograms[selectedIndex]
+      }
+
+      let finalUpcoming: VideoProgram[] = allPrograms.slice(selectedIndex + 1)
+      if (finalUpcoming.length === 0) {
+        const schedulePrograms = getChannelPrograms(channelId)
+        const localIndex = schedulePrograms.findIndex(p => p.videoId === selectedProgram.videoId)
+        if (localIndex >= 0 && schedulePrograms.length > 0) {
+          finalUpcoming = []
+          for (let i = 1; i <= 15; i++) {
+            finalUpcoming.push(schedulePrograms[(localIndex + i) % schedulePrograms.length])
+          }
+        }
+      }
+
+      const timeRemaining = Math.max(0, selectedProgram.duration - selectedStartTime)
       const rawAdjustedStartTime = getAdjustedLiveSeekTime(startTime, program.duration, backgroundMs, fetchLatencyMs)
       
       // Convert upcoming API list to our internal shape so we can slide across boundaries
@@ -687,7 +735,7 @@ export function SyncedVideoPlayer({
 
       const finalUpcoming = apiUpcomingPrograms.slice(upcomingStartIndex)
       const timeRemaining = Math.max(0, selectedProgram.duration - selectedStartTime)
-      
+
       brandedOverlayProgramRef.current = selectedProgram.title
 
       setIsLoading(false)
@@ -1346,7 +1394,8 @@ export function SyncedVideoPlayer({
       backgroundStartTimeRef.current = null
 
       console.log('☀️ App resumed/page shown — refreshing live stream', { hiddenMs })
-      if (currentChannelId && !showStartScreen) {
+      setShowStartScreen(false)
+      if (currentChannelId) {
         setIsLoading(true)
         setShowBrandedOverlay(true)
         setIframeVisible(false)
@@ -1360,6 +1409,20 @@ export function SyncedVideoPlayer({
         enterBackground()
       } else {
         resumeFromBackground()
+      }
+    }
+
+    const onPageHide = () => {
+      enterBackground()
+    }
+
+    const onPageShow = () => {
+      if (!document.hidden) {
+        resumeFromBackground()
+      }
+    }
+
+
       }
     }
 
