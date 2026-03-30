@@ -2,6 +2,7 @@
   "name": "my-v0-project",
   "version": "0.1.0",
   "private": true,
+  "engines": { "node": ">=20.x <21", "pnpm": "^10" },
   "scripts": {
     "build": "next build --webpack",
     "dev": "next dev --turbo -p 4356",
