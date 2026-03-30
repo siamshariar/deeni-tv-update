@@ -94,9 +94,14 @@ export function SyncedVideoPlayer({
   // UI State
   const [showControls, setShowControls] = useState(true)
   const [controlsVisible, setControlsVisible] = useState(true)
-  // Start all sessions muted while the app shows the start screen.
-  // The first user-triggered playback transition will unmute the real stream.
-  const [isMuted, setIsMuted] = useState(true)
+  // On iOS start muted (autoplay restriction); on other platforms start unmuted
+  const [isMuted, setIsMuted] = useState(() => {
+    if (typeof navigator === 'undefined') return false
+    return (
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    )
+  })
   const [volume, setVolume] = useState(75)
   const [showVolumeTooltip, setShowVolumeTooltip] = useState(false)
   const [showTicker, setShowTicker] = useState(true)
@@ -144,9 +149,6 @@ export function SyncedVideoPlayer({
   const [playerReady, setPlayerReady] = useState(false)
   const [apiError, setApiError] = useState<string | null>(null)
   const [serverTimeOffset, setServerTimeOffset] = useState(0)
-  const [hasStartClicked, setHasStartClicked] = useState(false)
-  const hasStartClickedRef = useRef(false)
-  const autoUnmuteAfterStartRef = useRef(false)
   
   // Refs
   const playerRef = useRef<HTMLDivElement>(null)
@@ -244,14 +246,6 @@ export function SyncedVideoPlayer({
   useEffect(() => {
     setShowStartScreen(showStartModal)
   }, [showStartModal])
-
-  // Whenever start screen is visible, keep audio muted and volume at 0.
-  useEffect(() => {
-    if (!showStartScreen) return
-    setIsMuted(true)
-    setYouTubeMuted(true)
-    setYouTubeVolume(0)
-  }, [showStartScreen, setYouTubeMuted, setYouTubeVolume])
 
   // Handle external openHistoryModal prop
   useEffect(() => {
@@ -901,9 +895,9 @@ export function SyncedVideoPlayer({
         const loaded = loadVideo(program.videoId, Math.floor(startTime))
         if (loaded) {
           console.log('✅ 🍎 Video swapped on primed player')
-          // Keep it muted until real playback has started (first PLAYING event)
-          setYouTubeVolume(0)
-          setYouTubeMuted(true)
+          setYouTubeVolume(volume)
+          // Don't call setYouTubeMuted(false) — unmuteAndResume already did it
+          // synchronously in the gesture. Calling it again is harmless but redundant.
         } else {
           console.error('❌ 🍎 loadVideo failed on primed player')
           setIsLoading(false)
@@ -930,12 +924,12 @@ export function SyncedVideoPlayer({
               setVideoDuration(duration)
             }
             
-            setYouTubeVolume(0)
-            // Keep player muted until the first PLAYING event auto-unmutes
-            // once the real content is ready. The channel live stream should
-            // not produce sound before this user action/transition completes.
-            setIsMuted(true)
-            setYouTubeMuted(true)
+            setYouTubeVolume(volume)
+            // On iOS keep muted until user taps the unmute button (user gesture required)
+            if (!isIOS) {
+              setIsMuted(false)
+              setYouTubeMuted(false)
+            }
           },
           onStateChange: (state) => {
             if (!mountedRef.current) return
@@ -957,14 +951,6 @@ export function SyncedVideoPlayer({
               console.log('▶️ 22 Video is now playing')
               setIsLoading(false);
               setIframeVisible(true)
-
-              if (autoUnmuteAfterStartRef.current && hasStartClickedRef.current) {
-                setIsMuted(false)
-                setYouTubeMuted(false)
-                setYouTubeVolume(volume)
-                autoUnmuteAfterStartRef.current = false
-              }
-
               setTimeout(() => {
                 setShowBrandedOverlay(false) // Hide branded overlay when playback starts
               }, 4000);
@@ -1008,23 +994,14 @@ export function SyncedVideoPlayer({
   }, [isLoading, playerReady, isPrimedRef, volume, initializePlayer, loadVideo, seekTo, play, setYouTubeVolume, setYouTubeMuted, onChannelChange, onStartClick, getDuration, fetchFromBrowserAPI, notifyParentScheduleChange])
 
   const handleFirstTimeStart = useCallback(async () => {
-    setHasStartClicked(true)
-    hasStartClickedRef.current = true
-    autoUnmuteAfterStartRef.current = true
-
-    // Ensure the primer is muted while we are still in the user-gesture phase
-    // and before the real video stream is fully loaded.
-    setIsMuted(true)
-    setYouTubeMuted(true)
-    setYouTubeVolume(0)
-
     // ── Step 0 (synchronous — MUST be first, before any await) ──────────────
     // On iOS the user gesture window closes as soon as the call stack goes async.
-    // We need to unlock audio permission in this gesture, but we DO NOT want
-    // the primer video sound to play for the 1-2s while we fetch schedule data.
-    // So unlock at volume=0 and then set full volume once the real stream is loaded.
+    // Calling unmuteAndResume() HERE, before any fetch/await, tells the browser
+    // "the user intentionally enabled audio" and unlocks sound for this player
+    // instance.  loadVideoById() later will reuse the same unlocked player, so
+    // the real video starts with audio automatically.
     if (isPrimedRef.current) {
-      unmuteAndResume(0)
+      unmuteAndResume(volume)
     }
 
     // 1. Fetch channel list from live API and store in localStorage (only if not cached)
