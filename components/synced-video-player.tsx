@@ -30,7 +30,7 @@ import {
   addToPreviousVideos,
   getPreviousVideos,
   savePreviousVideos,
-  STORAGE_KEY,in
+  STORAGE_KEY,
   ApiChannel,
   getStoredApiChannels,
   saveApiChannels,
@@ -690,52 +690,7 @@ export function SyncedVideoPlayer({
       }
 
       const timeRemaining = Math.max(0, selectedProgram.duration - selectedStartTime)
-      const rawAdjustedStartTime = getAdjustedLiveSeekTime(startTime, program.duration, backgroundMs, fetchLatencyMs)
       
-      // Convert upcoming API list to our internal shape so we can slide across boundaries
-      const apiUpcomingPrograms: VideoProgram[] = (result.upcomingPrograms || []).map((prog: { ytVideoId: string; title: string; duration: number }) => ({
-        id: prog.ytVideoId,
-        videoId: prog.ytVideoId,
-        title: prog.title,
-        description: prog.title,
-        duration: prog.duration,
-        category: 'Lecture',
-        language: 'Bengali',
-        channelId: channelId,
-        thumbnail: `https://img.youtube.com/vi/${prog.ytVideoId}/maxresdefault.jpg`
-      }))
-
-      let selectedProgram = program
-      let selectedStartTime = rawAdjustedStartTime
-      let upcomingStartIndex = 0
-
-      if (selectedStartTime >= selectedProgram.duration && apiUpcomingPrograms.length > 0) {
-        let overflow = selectedStartTime - selectedProgram.duration
-
-        while (overflow > 0 && upcomingStartIndex < apiUpcomingPrograms.length) {
-          const candidate = apiUpcomingPrograms[upcomingStartIndex]
-          if (overflow < candidate.duration) {
-            selectedProgram = candidate
-            selectedStartTime = overflow
-            upcomingStartIndex += 1
-            overflow = -1
-            break
-          }
-          overflow -= candidate.duration
-          selectedProgram = candidate
-          selectedStartTime = candidate.duration
-          upcomingStartIndex += 1
-        }
-
-        if (overflow >= 0) {
-          // The hidden window went past all available upcoming programs; clamp.
-          selectedStartTime = selectedProgram.duration
-        }
-      }
-
-      const finalUpcoming = apiUpcomingPrograms.slice(upcomingStartIndex)
-      const timeRemaining = Math.max(0, selectedProgram.duration - selectedStartTime)
-
       brandedOverlayProgramRef.current = selectedProgram.title
 
       setIsLoading(false)
@@ -971,8 +926,9 @@ export function SyncedVideoPlayer({
         if (loaded) {
           console.log('✅ 🍎 Video swapped on primed player')
           setYouTubeVolume(volume)
-          // Don't call setYouTubeMuted(false) — unmuteAndResume already did it
-          // synchronously in the gesture. Calling it again is harmless but redundant.
+          setIsMuted(false)
+          setYouTubeMuted(false)
+          isPrimedRef.current = false
         } else {
           console.error('❌ 🍎 loadVideo failed on primed player')
           setIsLoading(false)
@@ -1076,7 +1032,10 @@ export function SyncedVideoPlayer({
     // instance.  loadVideoById() later will reuse the same unlocked player, so
     // the real video starts with audio automatically.
     if (isPrimedRef.current) {
-      unmuteAndResume(volume)
+      // Keep primer navigation silent until the actual channel video is loading.
+      // This avoids playing the temporary default clip at full volume during the
+      // startup API fetch delay.
+      unmuteAndResume(0)
     }
 
     // 1. Fetch channel list from live API and store in localStorage (only if not cached)
@@ -1409,20 +1368,6 @@ export function SyncedVideoPlayer({
         enterBackground()
       } else {
         resumeFromBackground()
-      }
-    }
-
-    const onPageHide = () => {
-      enterBackground()
-    }
-
-    const onPageShow = () => {
-      if (!document.hidden) {
-        resumeFromBackground()
-      }
-    }
-
-
       }
     }
 
