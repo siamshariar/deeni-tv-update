@@ -87,10 +87,9 @@ export default function Home() {
     setIsFirstTimeUser(false)
     setIsChannelSelectorOpen(false)
     
-    // After channel selection, show start modal
-    setTimeout(() => {
-      setShowStartModal(true)
-    }, 300)
+    // After channel selection, show start modal immediately to avoid
+    // pre-start audio leaking from early channel loading.
+    setShowStartModal(true)
   }
 
   const handleStartClick = () => {
